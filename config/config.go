@@ -2,10 +2,11 @@ package config
 
 import (
     "os"
+    "log"
     "github.com/pelletier/go-toml"
 )
 
-// debating if i should just make these cli arguments or just have it save in here
+// should these just be cli arguments?
 type Config struct {
     APIKey string `toml:"api_key"`
     Concurrency int `toml:"concurrency"`

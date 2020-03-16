@@ -6,16 +6,21 @@ import (
     "io/ioutil"
     "fmt"
     "log"
-    "net"
+    // "net"
     "net/url"
     "net/http"
+    "math"
     "mime"
     "time"
+    "regexp"
+    // "strconv"
+    "strings"
     "errors"
     "context"
     "encoding/json"
-    "golang.org/x/net/html"
-    "golang.org/x/net/html/atom"
+    "path/filepath"
+    // "golang.org/x/net/html"
+    // "golang.org/x/net/html/atom"
     "golang.org/x/sync/errgroup"
     "github.com/soeux/tumtum/config"
     "github.com/soeux/tumtum/database"
@@ -60,32 +65,31 @@ type Scraper struct {
 }
 
 // initalising a scraper obj
-func NewScraper(client *http.Client, config *config.Config, database *database.Database) *Scraper {
+func NewScraper(client *http.Client, database *database.Database) *Scraper {
     return &Scraper {
         client: client,
-        config: config,
         databse: database,
     }
 }
 
 // creating the save location + starting a child process for scraper
-func (s *Scraper) Scrape(ctx context.Context, link string, cfg *config.Config) (int64, error) {
+func (s *Scraper) Scrape(ctx context.Context, link string, cfg *config.Config) (map[string]int64, error) {
     err := os.MkdirAll(cfg.Save, 0755)
     if err != nil {
-        return 0, err
+        return map[string]int64{"0":0}, err
     }
 
     // are we creating a child process here?
     eg, ctx := errgroup.WithContext(ctx)
 
     sc := newScrapeContext(s, cfg, link, eg, ctx)
-    // if err != nil {
-    //     return 0, err
-    // }
+    if err != nil {
+        return map[string]int64{"0":0}, err
+    }
 
     err = sc.Scrape()
     if err != nil {
-        return 0, err
+        return map[string]int64{"0":0}, err
     }
 
     return sc.ids, nil
@@ -94,12 +98,12 @@ func (s *Scraper) Scrape(ctx context.Context, link string, cfg *config.Config) (
 type scrapeContextState int
 
 // ????
-const {
+const (
     scrapeContextStateTryUseAPI scrapeContextState = iota
     scrapeContextStateUseAPI
     scrapeContextStateTryUseIndashAPI
     scrapeContextStateUseIndashAPI
-}
+)
 
 type scrapeContext struct {
     // structuralised arguments
@@ -126,25 +130,26 @@ type scrapeContext struct {
 
 func newScrapeContext(s *Scraper, cfg *config.Config, link string, eg *errgroup.Group, ctx context.Context) *scrapeContext {
     // initalising a scrapeContext
-    return sc := &scrapeContext {
+    sc := &scrapeContext {
         scraper: s,
         config: cfg,
         link: link,
         errgroup: eg,
         ctx: ctx,
         state: scrapeContextStateTryUseAPI,
-        ids: map[string]int64 {
+        ids: map[string]int64{
             "highest_id": math.MinInt64,
             "lowest_id": math.MaxInt64,
             "current_id": 0,
         },
         sema: semaphore.NewPrioritySemaphore(s.config.Concurrency),
     }
+
+    return sc
 }
 
 func (sc *scrapeContext) Scrape() (err error) {
     log.Printf("%s: scraping starting at %d", sc.link, sc.ids["highest_id"])
-    // why anonymous functions??
     defer func() {
         log.Printf("%s: scraping finished at %d", sc.link, sc.ids["highest_id"])
     }()
@@ -173,7 +178,7 @@ func (sc *scrapeContext) Scrape() (err error) {
         }
 
         // convert postID to int64
-        for _, posts := range res.Response.Posts {
+        for _, post := range res.Response.Posts {
             post.id, err = post.ID.Int64()
             if err != nil {
                 return
@@ -205,7 +210,7 @@ func (sc *scrapeContext) Scrape() (err error) {
     }
 }
 
-func (sc *scrapeContext) scrapeBlog() (data *postResponse, err error) {
+func (sc *scrapeContext) scrapeBlog() (data *postsResponse, err error) {
     for data == nil {
         data, err = sc.scrapeBlogMaybe()
         if err != nil {
@@ -225,18 +230,22 @@ func (sc *scrapeContext) scrapeBlogMaybe() (*postsResponse, error) {
         err error
     )
 
-    switch sc.state {
-    // ?????
-    case scrapeContextStateTryUseIndashAPI, scrapeContextStateUseIndashAPI:
-        url = sc.getIndashBlogPoastURL()
-        res, err = sc.doGetRequest(url, http.Header {
-            "Referer": {"https://www.tumblr.com/dashboard"},
-            "X-Requested-With": {"XMLHttpRequest"},
-        })
-    default:
-        url = sc.getAPIPostURL()
-        res, err = sc.doGetRequest(url, nil)
-    }
+    // switch sc.state {
+    // // ?????
+    // case scrapeContextStateTryUseIndashAPI, scrapeContextStateUseIndashAPI:
+    //     url = sc.getIndashBlogPoastURL()
+    //     res, err = sc.doGetRequest(url, http.Header {
+    //         "Referer": {"https://www.tumblr.com/dashboard"},
+    //         "X-Requested-With": {"XMLHttpRequest"},
+    //     })
+    // default:
+    //     url = sc.getAPIPostURL()
+    //     res, err = sc.doGetRequest(url, nil)
+    // }
+
+    // the above switches between InDashAPI and the regular API
+    url = sc.getAPIPostsURL()
+    res, err = sc.doGetRequest(url, nil)
 
     if err != nil {
         return nil, err
@@ -257,7 +266,7 @@ func (sc *scrapeContext) scrapeBlogMaybe() (*postsResponse, error) {
         //     sc.state = scrapeContextStateTryUseIndashAPI
         //     return nil, nil
         // }
-        return nil, fmt.Error("GET %s failed with: %d %s", url, res.StatusCode, res.Status)
+        return nil, fmt.Errorf("GET %s failed with: %d %s", url, res.StatusCode, res.Status)
     }
 
     body, err := ioutil.ReadAll(res.Body)
@@ -265,7 +274,7 @@ func (sc *scrapeContext) scrapeBlogMaybe() (*postsResponse, error) {
         return nil, err
     }
 
-    data := &postResponse{}
+    data := &postsResponse{}
     err = json.Unmarshal(body, data)
     if err != nil {
         return nil, err
@@ -288,11 +297,6 @@ func (sc *scrapeContext) scrapePost(post *post) error {
 
     // actually get the content
     for _, t := range post.Trail {
-        name := t.BrokenBlogName
-        if len(t.Blog.Name) != 0 {
-            name = t.Blog.Name
-        }
-
         var cs []content
         err = json.Unmarshal(t.Content, &cs)
         if err != nil {
@@ -374,6 +378,7 @@ func (sc *scrapeContext) scrapeNPFContent(post *post, cs []content) error {
     return nil
 }
 
+// this is part of the InDashAPI
 // func (sc *scrapeContext) scrapePostBody(post *post, text string) {
 //     nodes, err := html.ParseFragement(strings.NewReader(text), &html.Node {
 //         Type: html.ElementNode,
@@ -414,6 +419,7 @@ func (sc *scrapeContext) scrapeNPFContent(post *post, cs []content) error {
 //     }
 // }
 
+// this is part of the InDashAPI
 // func (sc *scrapeContext) scrapePostBodyUsingSearch(post *post, test string) {
 //     for _, u := range htmlMediaURLRegexp.FindAllString(text, -1) {
 //         sc.downloadFileAsync(post, u)
@@ -434,18 +440,18 @@ func (sc *scrapeContext) downloadFileAsync(post *post, rawurl string) {
     })
 }
 
-func (sc *scrapeContext) downloadFile(post *post, rawurl string) error {
-    optimalRawURL := sc.fixupURL(rawurl)
+func (sc *scrapeContext) downloadFile(post *post, rawURL string) error {
+    optimalRawURL := sc.fixupURL(rawURL)
 
     // first try to use the optimal URL, if that doesn't work then fall back on the original
     err := sc.downloadFileMaybe(post, optimalRawURL)
     if err == errFileNotFound && optimalRawURL != rawURL {
-        err = sc.downloadFileMaybe(post, rawurl)
+        err = sc.downloadFileMaybe(post, rawURL)
     }
 
     // ignore 404 errors
     if err == errFileNotFound {
-        log.Printf("%s: did not find %s", sc.link, rawurl)
+        log.Printf("%s: did not find %s", sc.link, rawURL)
         err = nil
     }
 
@@ -458,13 +464,13 @@ func (sc *scrapeContext) downloadFile(post *post, rawurl string) error {
     return err
 }
 
-func (sc *scrapeContext) downloadFileMaybe(post *post, rawurl string) error {
-    u, err := url.Parse(rawurl)
+func (sc *scrapeContext) downloadFileMaybe(post *post, rawURL string) error {
+    u, err := url.Parse(rawURL)
     if err != nil {
         return err
     }
 
-    path := filepath.Join(sc.cfg.Save, filepath.Base(rawurl))
+    path := filepath.Join(sc.config.Save, filepath.Base(rawURL))
     fileTime := post.timestamp() // im slightly confused about where this came from
 
     // file already exists -> skip
@@ -484,14 +490,14 @@ func (sc *scrapeContext) downloadFileMaybe(post *post, rawurl string) error {
     case http.StatusOK:
         // continue
     case http.StatusForbidden:
-        // if a video got deleted for some reason, the link 403 forbidden
+        // if a video got deleted for some reason, the link is 403 forbidden
         return nil
     case http.StatusNotFound:
         return errFileNotFound
     case http.StatusInternalServerError:
         return errFileNotFound
     default:
-        return fmt.Errorf("GET %s failed with: %d %s", rawurl, res.StatusCode, res.Status)
+        return fmt.Errorf("GET %s failed with: %d %s", rawURL, res.StatusCode, res.Status)
     }
 
     lastModifiedString := res.Header.Get("Last-Modified")
@@ -505,11 +511,11 @@ func (sc *scrapeContext) downloadFileMaybe(post *post, rawurl string) error {
     }
 
     fixedPath := sc.fixupFilePath(res, path)
-    if fixedpath != path {
-        path = fixedpath
+    if fixedPath != path {
+        path = fixedPath
 
         // file already exits -> skip
-        _, err = os.LStat(path)
+        _, err = os.Lstat(path)
         if err == nil {
             log.Printf("%s: skipping %s", sc.link, path)
             return nil
@@ -546,4 +552,73 @@ func (sc *scrapeContext) downloadFileMaybe(post *post, rawurl string) error {
 
     log.Printf("%s: wrote %s", sc.link, path)
     return nil
+}
+
+func (sc *scrapeContext) getAPIPostsURL() *url.URL {
+    u, err := url.Parse(fmt.Sprintf("https://api.tumblr.com/v2/blog/%s/posts", sc.link))
+    if err != nil {
+        panic(err)
+    }
+
+    vals := url.Values {
+        "api_key": {sc.config.APIKey},
+        "limit": {"20"},
+        "npf": {"true"},
+        "reblog_info": {"1"},
+    }
+
+    u.RawQuery = vals.Encode()
+
+    return u
+}
+
+func (sc *scrapeContext) doGetRequest(url *url.URL, header http.Header) (*http.Response, error) {
+    if header == nil {
+        header = make(http.Header)
+    }
+
+    req := &http.Request {
+        Method: http.MethodGet,
+        URL: url,
+        Header: header,
+    }
+    req = req.WithContext(sc.ctx)
+    return sc.scraper.client.Do(req)
+}
+
+func (sc *scrapeContext) fixupURL(url string) string {
+    if strings.HasSuffix(url, ".mp4") {
+        return videoURLFixupRegexp.ReplaceAllString(url, ".mp4")
+    }
+
+    return imageSizeFixupRegexp.ReplaceAllString(url, "_1280.$1")
+}
+
+func (sc *scrapeContext) fixupFilePath(res *http.Response, path string) string {
+    _, contentDispositionParams, _ := mime.ParseMediaType(res.Header.Get("Content-Disposition"))
+    if contentDispositionParams != nil {
+        filename := contentDispositionParams["filename"]
+        if len(filename) != 0 {
+            return filepath.Join(sc.config.Save, filename)
+        }
+    }
+
+    exts, _ := mime.ExtensionsByType(res.Header.Get("Content-Type"))
+    if len(exts) != 0 {
+        dir, file := filepath.Split(path)
+        curExt := filepath.Ext(file)
+
+        // this seems pointless?
+        for _, ext := range exts {
+            if ext == curExt {
+                return path
+            }
+        }
+
+        basename := strings.TrimSuffix(file, curExt)
+        file = basename + exts[0]
+        return filepath.Join(dir, file)
+    }
+
+    return path
 }

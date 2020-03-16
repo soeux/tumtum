@@ -2,7 +2,6 @@ package downloader
 
 import (
     "os"
-    "fmt"
     "log"
     "time"
     "net"
@@ -11,6 +10,9 @@ import (
     "context"
     "os/signal"
     "github.com/urfave/cli/v2"
+    "github.com/soeux/tumtum/config"
+    "github.com/soeux/tumtum/scraper"
+    "github.com/soeux/tumtum/database"
 )
 
 func HandleLink(c *cli.Context, url string) error  {
