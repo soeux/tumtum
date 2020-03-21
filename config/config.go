@@ -6,7 +6,6 @@ import (
     "github.com/pelletier/go-toml"
 )
 
-// should these just be cli arguments?
 type Config struct {
     APIKey string `toml:"api_key"`
     Concurrency int `toml:"concurrency"`
@@ -26,15 +25,15 @@ func LoadConfigOrDefault(path string) (*Config, error) {
                 return nil, err
             }
 
-            log.Print("config file not found -> using default values [exit]")
+            log.Fatal("config file not found")
         } else {
+            // ???
             log.Print("recovering backup config file")
         }
     }
 
-    // i have no idea where this is from
     if cfg.Concurrency <= 0 {
-        cfg.Concurrency = 24
+        cfg.Concurrency = 20
     }
 
     return cfg, nil

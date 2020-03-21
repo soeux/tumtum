@@ -6,21 +6,17 @@ import (
     "io/ioutil"
     "fmt"
     "log"
-    // "net"
     "net/url"
     "net/http"
     "math"
     "mime"
     "time"
     "regexp"
-    // "strconv"
     "strings"
     "errors"
     "context"
     "encoding/json"
     "path/filepath"
-    // "golang.org/x/net/html"
-    // "golang.org/x/net/html/atom"
     "golang.org/x/sync/errgroup"
     "github.com/soeux/tumtum/config"
     "github.com/soeux/tumtum/database"
@@ -61,7 +57,7 @@ func init() {
 type Scraper struct {
     client *http.Client
     config *config.Config
-    databse *database.Database
+    db *database.Database
 }
 
 // initalising a scraper obj
@@ -73,25 +69,25 @@ func NewScraper(client *http.Client, database *database.Database) *Scraper {
 }
 
 // creating the save location + starting a child process for scraper
-func (s *Scraper) Scrape(ctx context.Context, link string, cfg *config.Config) (map[string]int64, error) {
+func (s *Scraper) Scrape(ctx context.Context, link string, cfg *config.Config,) (time.Time, error) {
     err := os.MkdirAll(cfg.Save, 0755)
     if err != nil {
-        return map[string]int64{"0":0}, err
+        return time.Time(), err
     }
 
     eg, ctx := errgroup.WithContext(ctx)
 
     sc := newScrapeContext(s, cfg, link, eg, ctx)
     if err != nil {
-        return map[string]int64{"0":0}, err
+        return time.Time(), err
     }
 
     err = sc.Scrape()
     if err != nil {
-        return map[string]int64{"0":0}, err
+        return time.Time(), err
     }
 
-    return sc.ids, nil
+    return sc.time_obj, nil
 }
 
 type scrapeContext struct {
@@ -99,17 +95,12 @@ type scrapeContext struct {
     scraper *Scraper
     config *config.Config
     link string
-    errgroup * errgroup.Group
+    errgroup *errgroup.Group
     ctx context.Context
 
     // current pagination state
-	// TODO: this needs to be looked at more closely
-    offset int
-    before time.Time
-
-    // informational values
-    // highest_id, lowest_id, current_id
-    ids map[string]int64
+	time_obj time.Time
+	time_new bool
 
     // other private members
     sema *semaphore.PrioritySemaphore
@@ -123,22 +114,32 @@ func newScrapeContext(s *Scraper, cfg *config.Config, link string, eg *errgroup.
         link: link,
         errgroup: eg,
         ctx: ctx,
-        ids: map[string]int64{
-            "highest_id": math.MinInt64,
-            "lowest_id": math.MaxInt64,
-            "current_id": 0,
-        },
+		time_obj: time.Time(), // if this is left alone, the scraper will not work
+		was_new: false,
         sema: semaphore.NewPrioritySemaphore(s.config.Concurrency),
     }
+
+	if t, err := s.db.GetTime(link); err != nil {
+		// time.Time() -> 0001-01-01 00:00:00 +0000 UTC
+		// if there's no time then the time is now
+		if t == time.Time() {
+			// starting from the top
+			sc.time_obj = time.Now()
+			sc.time_new = true
+		} else {
+			// if there's time in the db, then we'll pick up where we left off
+			sc.time_obj = t
+		}
+	} else {
+		log.Printf("loading time from db failed")
+	}
 
     return sc
 }
 
 func (sc *scrapeContext) Scrape() (err error) {
-    log.Printf("%s: scraping starting at %d", sc.link, sc.ids["highest_id"])
-    defer func() {
-        log.Printf("%s: scraping finished at %d", sc.link, sc.ids["highest_id"])
-    }()
+    log.Printf("%s: scraping starting at %v", sc.link, sc.time_obj)
+    defer func() { log.Printf("%s: scraping finished at %v", sc.link, sc.time_obj) }()
 
     defer func() {
         e := sc.errgroup.Wait()
@@ -147,10 +148,10 @@ func (sc *scrapeContext) Scrape() (err error) {
         }
     }()
 
-    initHighestID := sc.ids["highest_id"]
+    startTime := sc.time_obj
 
     for {
-        // figure out how to implement the ID thing
+		log.Printf("%s: fetching posts before %v", sc.link, sc.time_obj.Format("2Jan06 15:04:05"))
 
         var res *postsResponse
         res, err = sc.scrapeBlog()
@@ -164,6 +165,7 @@ func (sc *scrapeContext) Scrape() (err error) {
         }
 
         // convert postID to int64
+		// not sure if this going to be useful
         for _, post := range res.Response.Posts {
             post.id, err = post.ID.Int64()
             if err != nil {
