@@ -69,22 +69,37 @@ func NewScraper(client *http.Client, database *database.Database) *Scraper {
 }
 
 // creating the save location + starting a child process for scraper
+<<<<<<< HEAD
 func (s *Scraper) Scrape(ctx context.Context, link string, cfg *config.Config,) (time.Time, error) {
     err := os.MkdirAll(cfg.Save, 0755)
     if err != nil {
         return time.Time(), err
+=======
+func (s *Scraper) Scrape(ctx context.Context, link string, cfg *config.Config) (time.Time, error) {
+    err := os.MkdirAll(cfg.Save, 0755)
+    if err != nil {
+        return time.Now(), err
+>>>>>>> ecff6d204e6c32c29629e333251664dca54704f4
     }
 
     eg, ctx := errgroup.WithContext(ctx)
 
     sc := newScrapeContext(s, cfg, link, eg, ctx)
     if err != nil {
+<<<<<<< HEAD
         return time.Time(), err
+=======
+        return time.Now(), err
+>>>>>>> ecff6d204e6c32c29629e333251664dca54704f4
     }
 
     err = sc.Scrape()
     if err != nil {
+<<<<<<< HEAD
         return time.Time(), err
+=======
+        return time.Now(), err
+>>>>>>> ecff6d204e6c32c29629e333251664dca54704f4
     }
 
     return sc.time_obj, nil
@@ -99,8 +114,19 @@ type scrapeContext struct {
     ctx context.Context
 
     // current pagination state
+<<<<<<< HEAD
 	time_obj time.Time
 	time_new bool
+=======
+	// TODO: this needs to be looked at more closely
+    offset int
+    before time.Time
+	time_obj time.Time
+
+    // informational values
+    // highest_id, lowest_id, current_id
+    ids map[string]int64
+>>>>>>> ecff6d204e6c32c29629e333251664dca54704f4
 
     // other private members
     sema *semaphore.PrioritySemaphore
