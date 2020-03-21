@@ -73,25 +73,25 @@ func NewScraper(client *http.Client, database *database.Database) *Scraper {
 }
 
 // creating the save location + starting a child process for scraper
-func (s *Scraper) Scrape(ctx context.Context, link string, cfg *config.Config) (map[string]int64, error) {
+func (s *Scraper) Scrape(ctx context.Context, link string, cfg *config.Config) (time.Time, error) {
     err := os.MkdirAll(cfg.Save, 0755)
     if err != nil {
-        return map[string]int64{"0":0}, err
+        return time.Now(), err
     }
 
     eg, ctx := errgroup.WithContext(ctx)
 
     sc := newScrapeContext(s, cfg, link, eg, ctx)
     if err != nil {
-        return map[string]int64{"0":0}, err
+        return time.Now(), err
     }
 
     err = sc.Scrape()
     if err != nil {
-        return map[string]int64{"0":0}, err
+        return time.Now(), err
     }
 
-    return sc.ids, nil
+    return sc.time_obj, nil
 }
 
 type scrapeContext struct {
@@ -106,6 +106,7 @@ type scrapeContext struct {
 	// TODO: this needs to be looked at more closely
     offset int
     before time.Time
+	time_obj time.Time
 
     // informational values
     // highest_id, lowest_id, current_id

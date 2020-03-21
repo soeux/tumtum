@@ -19,43 +19,21 @@ func HandleLink(c *cli.Context, url string) error  {
     // creating parentContext
     ctx := parentContext()
 
-    // does a config option even matter?
     cfg, err := config.LoadConfigOrDefault("tumtum.toml")
     if err != nil {
         return err
     }
 
-    // TODO: write the DB
     db, err := database.NewDB()
     if err != nil {
         return err
     }
 
-    // why are cookies important?
-    // cookies, err = db.GetCookies()
-    // if err != nil {
-    //     log.Printf("failed to get cookie snapshot: %v", err)
-    // }
-
-    // jar := cookiejar.New(cookies)
-    // if err != nil {
-    //     return err
-    // }
-
-    // defer func() {
-    //     snapshot := jar.Snapshot()
-    //     err := db.SaveCookies(snapshot)
-    //     if err != nil {
-    //         log.Printf("failed to save cookies: %v", err)
-    //     }
-    // }()
-
-    // im still wacked as to why i need cookies to make an api request
     httpClient = newHTTPClient() // newHTTPClient(jar)
 
     s := scraper.NewScraper(httpClient, db)
 
-    allID, err := s.Scrape(ctx, url, cfg)
+    times, err := s.Scrape(ctx, url, cfg)
     if err != nil {
         if !isContextCanceledError(err) {
             log.Println(error)
@@ -63,7 +41,7 @@ func HandleLink(c *cli.Context, url string) error  {
         return err
     }
 
-    err = db.setIDs(url, allID)
+    err = db.setTime(url, times)
     if err != nil {
         log.Println(err)
         return err
