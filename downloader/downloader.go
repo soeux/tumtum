@@ -34,7 +34,7 @@ func HandleLink(c *cli.Context, url string) error {
 
 	httpClient := newHTTPClient() // newHTTPClient(jar)
 
-	s := scraper.NewScraper(httpClient, db)
+	s := scraper.NewScraper(httpClient, cfg, db)
 
 	times, offsets, err := s.Scrape(ctx, url, cfg)
 	if err != nil {

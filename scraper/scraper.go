@@ -61,9 +61,10 @@ type Scraper struct {
 }
 
 // initalising a scraper obj
-func NewScraper(client *http.Client, database *database.Database) *Scraper {
+func NewScraper(client *http.Client, config *config.Config, database *database.Database) *Scraper {
 	return &Scraper{
 		client: client,
+		config: config,
 		db:     database,
 	}
 }
@@ -120,15 +121,17 @@ func newScrapeContext(s *Scraper, cfg *config.Config, link string, eg *errgroup.
 
 	// if there's an offset in the db use that
 	if o, err := s.db.GetOffset(link); err != nil {
-		sc.offset = o
+		log.Printf("error loading offset from db: %v", err)
 	} else {
-		fmt.Errorf("error loading offset from db")
+		sc.offset = o
 	}
 
 	if t, err := s.db.GetTime(link); err != nil {
+		log.Printf("error loading time from db: %v", err)
+	} else {
 		// time.Time{} -> 0001-01-01 00:00:00 +0000 UTC
 		// if there's no time then the time is now
-		if !t.IsZero() {
+		if t.IsZero() {
 			// starting from the top
 			sc.timeObj = time.Now()
 			sc.timeNew = true
@@ -136,8 +139,6 @@ func newScrapeContext(s *Scraper, cfg *config.Config, link string, eg *errgroup.
 			// if there's time in the db, then we'll pick up where we left off
 			sc.timeObj = t
 		}
-	} else {
-		fmt.Errorf("error loading time from db")
 	}
 
 	return sc
@@ -456,6 +457,7 @@ func (sc *scrapeContext) getAPIPostsURL() *url.URL {
 		"limit":   {"20"},
 		"npf":     {"true"},
 		"offset":  {string(sc.offset)},
+		"before":  {string(sc.timeObj.Unix())},
 	}
 
 	u.RawQuery = vals.Encode()
