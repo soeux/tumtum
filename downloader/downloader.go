@@ -36,7 +36,7 @@ func HandleLink(c *cli.Context, url string) error {
 
 	s := scraper.NewScraper(httpClient, db)
 
-	times, err := s.Scrape(ctx, url, cfg)
+	times, offsets, err := s.Scrape(ctx, url, cfg)
 	if err != nil {
 		if !isContextCanceledError(err) {
 			log.Println(err)
@@ -50,10 +50,14 @@ func HandleLink(c *cli.Context, url string) error {
 		return err
 	}
 
+	err = db.SetOffset(offsets)
+	if err != nil {
+		log.Println(err)
+	}
+
 	return nil
 }
 
-// im still 100% sure what this does, but it might be part of the problem in the source.
 func parentContext() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 

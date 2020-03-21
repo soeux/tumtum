@@ -63,31 +63,28 @@ type Scraper struct {
 // initalising a scraper obj
 func NewScraper(client *http.Client, database *database.Database) *Scraper {
 	return &Scraper{
-		client:   client,
-		db: database,
+		client: client,
+		db:     database,
 	}
 }
 
 // creating the save location + starting a child process for scraper
-func (s *Scraper) Scrape(ctx context.Context, link string, cfg *config.Config) (time.Time, error) {
+func (s *Scraper) Scrape(ctx context.Context, link string, cfg *config.Config) (time.Time, int64, error) {
 	err := os.MkdirAll(cfg.Save, 0755)
 	if err != nil {
-		return time.Time{}, err
+		return time.Time{}, 0, err
 	}
 
 	eg, ctx := errgroup.WithContext(ctx)
 
 	sc := newScrapeContext(s, cfg, link, eg, ctx)
-	if err != nil {
-		return time.Time{}, err
-	}
 
 	err = sc.Scrape()
 	if err != nil {
-		return time.Time{}, err
+		return time.Time{}, 0, err
 	}
 
-	return sc.time_obj, nil
+	return sc.timeObj, sc.offset, nil
 }
 
 type scrapeContext struct {
@@ -99,8 +96,9 @@ type scrapeContext struct {
 	ctx      context.Context
 
 	// current pagination state
-	time_obj time.Time
-	time_new bool // true if we're starting on a blog for the first time, false if there's a time in the db
+	timeObj time.Time
+	timeNew bool // true if we're starting on a blog for the first time, false if there's a time in the db
+	offset  int64
 
 	// other private members
 	sema *semaphore.PrioritySemaphore
@@ -114,32 +112,40 @@ func newScrapeContext(s *Scraper, cfg *config.Config, link string, eg *errgroup.
 		link:     link,
 		errgroup: eg,
 		ctx:      ctx,
-		time_obj: time.Time{}, // if this is left alone, the scraper will not work
-		was_new:  false,
+		timeObj:  time.Time{}, // if this is left alone, the scraper will not work
+		timeNew:  false,
+		offset:   0,
 		sema:     semaphore.NewPrioritySemaphore(s.config.Concurrency),
 	}
 
+	// if there's an offset in the db use that
+	if o, err := s.db.GetOffset(link); err != nil {
+		sc.offset = o
+	} else {
+		fmt.Errorf("error loading offset from db")
+	}
+
 	if t, err := s.db.GetTime(link); err != nil {
-		// time.Time() -> 0001-01-01 00:00:00 +0000 UTC
+		// time.Time{} -> 0001-01-01 00:00:00 +0000 UTC
 		// if there's no time then the time is now
-		if t == time.Time{} {
+		if !t.IsZero() {
 			// starting from the top
-			sc.time_obj = time.Now()
-			sc.time_new = true
+			sc.timeObj = time.Now()
+			sc.timeNew = true
 		} else {
 			// if there's time in the db, then we'll pick up where we left off
-			sc.time_obj = t
+			sc.timeObj = t
 		}
 	} else {
-		log.Printf("loading time from db failed")
+		fmt.Errorf("error loading time from db")
 	}
 
 	return sc
 }
 
 func (sc *scrapeContext) Scrape() (err error) {
-	log.Printf("%s: scraping starting at %v", sc.link, sc.time_obj)
-	defer func() { log.Printf("%s: scraping finished at %v", sc.link, sc.time_obj) }()
+	log.Printf("%s: scraping starting at %v", sc.link, sc.timeObj.Format("2Jan06 15:04:05"))
+	defer func() { log.Printf("%s: scraping finished at %v", sc.link, sc.timeObj.Format("2Jan06 15:04:05")) }()
 
 	defer func() {
 		e := sc.errgroup.Wait()
@@ -148,10 +154,10 @@ func (sc *scrapeContext) Scrape() (err error) {
 		}
 	}()
 
-	startTime := sc.time_obj
+	// startTime := sc.timeObj
 
 	for {
-		log.Printf("%s: fetching posts before %v", sc.link, sc.time_obj.Format("2Jan06 15:04:05"))
+		log.Printf("%s: fetching posts before %v", sc.link, sc.timeObj.Format("2Jan06 15:04:05"))
 
 		var res *postsResponse
 		res, err = sc.scrapeBlog()
@@ -173,17 +179,18 @@ func (sc *scrapeContext) Scrape() (err error) {
 			}
 		}
 
+		// just realised i could probably just do it by offsets and keep adding every loop:/
+
+		// how we're going to keep track of the times and scraping a post
 		for _, post := range res.Response.Posts {
-			if post.id < sc.ids["lowest_id"] {
-				sc.ids["lowest_id"] = post.id
-			}
-
-			if post.id > sc.ids["highest_id"] {
-				sc.ids["highest_id"] = post.id
-			}
-
-			if post.id <= initHighestID {
-				// probably wouldn't make it here??
+			// check if this post has an older time than the one we have on hand
+			if sc.timeObj.Sub(post.timestamp()) >= 0 {
+				// positive, so it's older than what we have in timeObj
+				// we're keeping the post's time
+				sc.timeObj = post.timestamp()
+			} else {
+				// negative, so the post's time is more recent than the one on hand
+				// think this would be a weird situation and could cause a loop if we kept it..
 				return
 			}
 
@@ -193,8 +200,7 @@ func (sc *scrapeContext) Scrape() (err error) {
 			}
 		}
 
-		// i don't get this
-		sc.offset += len(res.Response.Posts)
+		sc.offset += int64(len(res.Response.Posts))
 	}
 }
 
@@ -209,8 +215,7 @@ func (sc *scrapeContext) scrapeBlog() (data *postsResponse, err error) {
 }
 
 func (sc *scrapeContext) scrapeBlogMaybe() (*postsResponse, error) {
-	// what the fuck
-	sc.sema.Acquire(sc.offset)
+	sc.sema.Acquire(int(sc.offset))
 
 	var (
 		url *url.URL
@@ -218,7 +223,6 @@ func (sc *scrapeContext) scrapeBlogMaybe() (*postsResponse, error) {
 		err error
 	)
 
-	// the above switches between InDashAPI and the regular API
 	url = sc.getAPIPostsURL()
 	res, err = sc.doGetRequest(url, nil)
 
@@ -247,7 +251,6 @@ func (sc *scrapeContext) scrapeBlogMaybe() (*postsResponse, error) {
 
 func (sc *scrapeContext) scrapePost(post *post) error {
 	// NPF post
-	// is it worth going or not?
 	err := sc.scrapeNPFContent(post, post.Content)
 	if err != nil {
 		return err
@@ -321,8 +324,8 @@ func (sc *scrapeContext) downloadFileAsync(post *post, rawurl string) {
 		panic("missing url")
 	}
 
-	// wtf is this offset shit
-	sc.sema.Acquire(sc.offset)
+	sc.sema.Acquire(int(sc.offset))
+	// this line is what has been causing the program to fail in lhecker's implementation whenever any request timesout thus cancelling the context
 	sc.errgroup.Go(func() error {
 		defer sc.sema.Release()
 		return sc.downloadFile(post, rawurl)
@@ -344,10 +347,9 @@ func (sc *scrapeContext) downloadFile(post *post, rawURL string) error {
 		err = nil
 	}
 
-	// not 100% sure when grabbing a file timesout, it cancells the context
-	// should probably make ignore timeouts so that doesn't cancel the context
 	if err != nil {
 		log.Printf("%s: failed to download file: %v", sc.link, err)
+		// err = nil // not sure if it'll be a good idea to just move on if a download fails
 	}
 
 	return err
@@ -360,7 +362,7 @@ func (sc *scrapeContext) downloadFileMaybe(post *post, rawURL string) error {
 	}
 
 	path := filepath.Join(sc.config.Save, filepath.Base(rawURL))
-	fileTime := post.timestamp() // im slightly confused about where this came from
+	fileTime := post.timestamp()
 
 	// file already exists -> skip
 	_, err = os.Lstat(path)
@@ -453,6 +455,7 @@ func (sc *scrapeContext) getAPIPostsURL() *url.URL {
 		"api_key": {sc.config.APIKey},
 		"limit":   {"20"},
 		"npf":     {"true"},
+		"offset":  {string(sc.offset)},
 	}
 
 	u.RawQuery = vals.Encode()
