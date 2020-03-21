@@ -57,7 +57,7 @@ func init() {
     }
 }
 
-// scraper obkect
+// scraper object
 type Scraper struct {
     client *http.Client
     config *config.Config
@@ -79,7 +79,6 @@ func (s *Scraper) Scrape(ctx context.Context, link string, cfg *config.Config) (
         return map[string]int64{"0":0}, err
     }
 
-    // are we creating a child process here?
     eg, ctx := errgroup.WithContext(ctx)
 
     sc := newScrapeContext(s, cfg, link, eg, ctx)
@@ -95,16 +94,6 @@ func (s *Scraper) Scrape(ctx context.Context, link string, cfg *config.Config) (
     return sc.ids, nil
 }
 
-type scrapeContextState int
-
-// ????
-const (
-    scrapeContextStateTryUseAPI scrapeContextState = iota
-    scrapeContextStateUseAPI
-    scrapeContextStateTryUseIndashAPI
-    scrapeContextStateUseIndashAPI
-)
-
 type scrapeContext struct {
     // structuralised arguments
     scraper *Scraper
@@ -113,10 +102,8 @@ type scrapeContext struct {
     errgroup * errgroup.Group
     ctx context.Context
 
-    // general state of this scrapeContext
-    state scrapeContextState
-
     // current pagination state
+	// TODO: this needs to be looked at more closely
     offset int
     before time.Time
 
@@ -136,7 +123,6 @@ func newScrapeContext(s *Scraper, cfg *config.Config, link string, eg *errgroup.
         link: link,
         errgroup: eg,
         ctx: ctx,
-        state: scrapeContextStateTryUseAPI,
         ids: map[string]int64{
             "highest_id": math.MinInt64,
             "lowest_id": math.MaxInt64,
@@ -230,19 +216,6 @@ func (sc *scrapeContext) scrapeBlogMaybe() (*postsResponse, error) {
         err error
     )
 
-    // switch sc.state {
-    // // ?????
-    // case scrapeContextStateTryUseIndashAPI, scrapeContextStateUseIndashAPI:
-    //     url = sc.getIndashBlogPoastURL()
-    //     res, err = sc.doGetRequest(url, http.Header {
-    //         "Referer": {"https://www.tumblr.com/dashboard"},
-    //         "X-Requested-With": {"XMLHttpRequest"},
-    //     })
-    // default:
-    //     url = sc.getAPIPostURL()
-    //     res, err = sc.doGetRequest(url, nil)
-    // }
-
     // the above switches between InDashAPI and the regular API
     url = sc.getAPIPostsURL()
     res, err = sc.doGetRequest(url, nil)
@@ -253,19 +226,6 @@ func (sc *scrapeContext) scrapeBlogMaybe() (*postsResponse, error) {
     defer res.Body.Close()
 
     if res.StatusCode != http.StatusOK {
-        // fuck the indash api
-        // if sc.state = scrapeContextStateTryUseAPI && res.StatusCode == http.StatusNotFound && len(sc.scraper.cfg.Username) != 0 {
-        //     sc.state = scrapeContextStateTryUseIndashAPI
-        //     return nil, nil
-        // }
-        // if sc.state == scrapeContextStateTryUseIndashAPI && res.StatusCode != http.StatusNotFound {
-        //     err := account.LoginOnce()
-        //     if err != nil {
-        //         return nil, err
-        //     }
-        //     sc.state = scrapeContextStateTryUseIndashAPI
-        //     return nil, nil
-        // }
         return nil, fmt.Errorf("GET %s failed with: %d %s", url, res.StatusCode, res.Status)
     }
 
@@ -278,10 +238,6 @@ func (sc *scrapeContext) scrapeBlogMaybe() (*postsResponse, error) {
     err = json.Unmarshal(body, data)
     if err != nil {
         return nil, err
-    }
-
-    if sc.state == scrapeContextStateTryUseAPI {
-        sc.state = scrapeContextStateUseAPI
     }
 
     return data, nil
@@ -308,27 +264,6 @@ func (sc *scrapeContext) scrapePost(post *post) error {
             return err
         }
     }
-
-    // indash posts
-    // bodyScraped := false
-    // for _, text := range []string{post.Body, post.Answer} {
-    //     if len(text) != 0 {
-    //         bodyScraped = true
-    //         sc.scrapePostBody(post, text)
-    //     }
-    // }
-    //
-    // if !bodyScraped && len(post.Reblog.Comment) != 0 {
-    //     sc.scrapePostBody(post, post.Reblog.Comment)
-    // }
-    //
-    // for _, photo := range post.Photos {
-    //     sc.downloadFileAsync(post, photo.OriginalSize.URL)
-    // }
-    //
-    // if len(post.VideoURL) != 0 {
-    //     sc.downloadFileAsync(post, post.VideoURL)
-    // }
 
     return nil
 }
@@ -377,54 +312,6 @@ func (sc *scrapeContext) scrapeNPFContent(post *post, cs []content) error {
 
     return nil
 }
-
-// this is part of the InDashAPI
-// func (sc *scrapeContext) scrapePostBody(post *post, text string) {
-//     nodes, err := html.ParseFragement(strings.NewReader(text), &html.Node {
-//         Type: html.ElementNode,
-//         DataAtom: atom.Div,
-//         Data: "div",
-//     })
-//
-//     if err != nil {
-//         log.Printf("%s: failed to parse body -> falling back to regexp: %v", sc.link, err)
-//         sc.scrapePostBodyUsingSearch(post, text)
-//         return
-//     }
-//
-//     for len(nodes) != 0 {
-//         idx := len(nodes) - 1
-//
-//         node := nodes[idx]
-//         nodes[idx] = nil
-//
-//         nodes = nodes[0:idx]
-//
-//         for child := node.FirstChild; child != nil; child = child.NextSibling {
-//             nodes = append(nodes, child)
-//         }
-//
-//         if node.Type != html.ElementNode {
-//             continue
-//         }
-//
-//         for _, attr := range node.Attr {
-//             switch attr.Key {
-//             case "href", "src", "data-big-photo":
-//                 if mediaURLRegexp.MatchString(attr.Val) {
-//                     sc.downloadFileAsync(post, attr.Val)
-//                 }
-//             }
-//         }
-//     }
-// }
-
-// this is part of the InDashAPI
-// func (sc *scrapeContext) scrapePostBodyUsingSearch(post *post, test string) {
-//     for _, u := range htmlMediaURLRegexp.FindAllString(text, -1) {
-//         sc.downloadFileAsync(post, u)
-//     }
-// }
 
 func (sc *scrapeContext) downloadFileAsync(post *post, rawurl string) {
     if len(rawurl) == 0 {
@@ -564,7 +451,6 @@ func (sc *scrapeContext) getAPIPostsURL() *url.URL {
         "api_key": {sc.config.APIKey},
         "limit": {"20"},
         "npf": {"true"},
-        "reblog_info": {"1"},
     }
 
     u.RawQuery = vals.Encode()
