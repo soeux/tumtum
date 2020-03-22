@@ -76,7 +76,7 @@ func (s *Database) GetTime(b string) (time.Time, error) {
 }
 
 // saves time.Time{} in unix
-func (s *Database) SetTime(b string, t time.Time) error {
+func (s *Database) SetTime(t time.Time) error {
 	return s.get().Update(func(tx *bbolt.Tx) error {
 		b, err := tx.CreateBucketIfNotExists(timeObj)
 		if err != nil {

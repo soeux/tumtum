@@ -44,7 +44,7 @@ func HandleLink(c *cli.Context, url string) error {
 		return err
 	}
 
-	err = db.SetTime(url, times)
+	err = db.SetTime(times)
 	if err != nil {
 		log.Println(err)
 		return err
@@ -88,7 +88,7 @@ func newHTTPClient() *http.Client {
 			ExpectContinueTimeout: 1 * time.Second,
 		},
 		Timeout: 60 * time.Second,
-		Jar:     nil, // hopefully this works bc i don't want to implement cookies
+		Jar:     nil,
 	}
 }
 

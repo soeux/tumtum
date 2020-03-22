@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -146,7 +147,15 @@ func newScrapeContext(s *Scraper, cfg *config.Config, link string, eg *errgroup.
 
 func (sc *scrapeContext) Scrape() (err error) {
 	log.Printf("%s: scraping starting at %v", sc.link, sc.timeObj.Format("2Jan06 15:04:05"))
-	defer func() { log.Printf("%s: scraping finished at %v", sc.link, sc.timeObj.Format("2Jan06 15:04:05")) }()
+	defer func() {
+		log.Printf("%s: scraping finished at %v", sc.link, sc.timeObj.Format("2Jan06 15:04:05"))
+
+		// so it seems when the program gets ^C, it doesn't go back to downloader.go so we have to save the time here
+		err := sc.scraper.db.SetTime(sc.timeObj)
+		if err != nil {
+			log.Println(err)
+		}
+	}()
 
 	defer func() {
 		e := sc.errgroup.Wait()
@@ -180,8 +189,6 @@ func (sc *scrapeContext) Scrape() (err error) {
 			}
 		}
 
-		// just realised i could probably just do it by offsets and keep adding every loop:/
-
 		// how we're going to keep track of the times and scraping a post
 		for _, post := range res.Response.Posts {
 			// check if this post has an older time than the one we have on hand
@@ -189,9 +196,9 @@ func (sc *scrapeContext) Scrape() (err error) {
 				// positive, so it's older than what we have in timeObj
 				// we're keeping the post's time
 				sc.timeObj = post.timestamp()
+				// log.Printf("time was positive: %v", sc.timeObj.Sub(post.timestamp()))
 			} else {
 				// negative, so the post's time is more recent than the one on hand
-				// think this would be a weird situation and could cause a loop if we kept it..
 				return
 			}
 
@@ -217,6 +224,7 @@ func (sc *scrapeContext) scrapeBlog() (data *postsResponse, err error) {
 
 func (sc *scrapeContext) scrapeBlogMaybe() (*postsResponse, error) {
 	sc.sema.Acquire(int(sc.offset))
+	defer sc.sema.Release() // added to prevent hanging
 
 	var (
 		url *url.URL
@@ -326,7 +334,7 @@ func (sc *scrapeContext) downloadFileAsync(post *post, rawurl string) {
 	}
 
 	sc.sema.Acquire(int(sc.offset))
-	// this line is what has been causing the program to fail in lhecker's implementation whenever any request timesout thus cancelling the context
+
 	sc.errgroup.Go(func() error {
 		defer sc.sema.Release()
 		return sc.downloadFile(post, rawurl)
@@ -456,8 +464,8 @@ func (sc *scrapeContext) getAPIPostsURL() *url.URL {
 		"api_key": {sc.config.APIKey},
 		"limit":   {"20"},
 		"npf":     {"true"},
-		"offset":  {string(sc.offset)},
-		"before":  {string(sc.timeObj.Unix())},
+		// "offset":  {strconv.FormatInt(sc.offset, 10)}, // better to use &before={timestamp}
+		"before": {strconv.FormatInt(sc.timeObj.Unix(), 10)},
 	}
 
 	u.RawQuery = vals.Encode()
